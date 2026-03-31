@@ -593,24 +593,21 @@ function showProfile() {
 }
 
 function startGeminiVoiceSearch() {
-    if (_isListening) return; // Prevent spam-clicking from triggering multiple listen() attempts
+    if (_isListening) return; 
 
     const pulse = document.getElementById('gemini-mic-pulse');
     const status = document.getElementById('gemini-mic-status');
     const btn = document.getElementById('gemini-mic-btn');
     
-    // UI Feedback
     if(pulse) pulse.classList.remove('hidden');
     if(status) status.innerText = currentLang === 'te' ? "వింటున్నాను... మాట్లాడండి" : (currentLang === 'hi' ? "सुन रहा हूँ... बोलिए" : "Listening... speak now");
     if(btn) btn.classList.add('border-green-500');
 
     listen(async (transcript) => {
-        // Reset UI
         if(pulse) pulse.classList.add('hidden');
         if(btn) btn.classList.remove('border-green-500');
         
         if (!transcript) {
-            // Confusion Handler
             if(status) status.innerText = "Tap to speak your needs";
             const errSpeech = currentLang === 'te' ? "క్షమించండి, నాకు అర్థం కాలేదు. దయచేసి మళ్లీ చెప్పండి." : "क्षमा करें, मुझे समझ नहीं आया। कृपया फिर से कहें।";
             const errPhonetic = currentLang === 'te' ? "Kshaminchandi, naaku artham kaaledu. Daya chesi malli cheppandi." : "Kshama karein, mujhe samajh nahi aaya. Kripaya phir se kahein.";
@@ -621,22 +618,6 @@ function startGeminiVoiceSearch() {
         if(status) status.innerText = currentLang === 'te' ? "వెతుకుతున్నాను..." : "खोज रहा हूँ...";
         
         try {
-            // FAST PATH: If local API key exists, bypass dead Netlify backend completely
-            const keyMeta = document.querySelector('meta[name="gemini-key"]');
-            if (keyMeta && keyMeta.getAttribute('content')) {
-                const data = await callGeminiDirect({
-                    query: transcript,
-                    lang: currentLang,
-                    profile: { name: appState.userName, age: appState.userAge, occ: appState.userOcc },
-                    db: astitva_db,
-                    mode: 'rag'
-                });
-                
-                if(status) status.innerText = "Tap to speak your needs";
-                renderRecommendedSchemes(data.scheme_ids || [], data.speech, data.speech_phonetic);
-                return;
-            }
-
             const res = await fetch('/.netlify/functions/gemini', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -644,37 +625,32 @@ function startGeminiVoiceSearch() {
                     query: transcript,
                     lang: currentLang,
                     profile: { name: appState.userName, age: appState.userAge, occ: appState.userOcc },
-                    db: astitva_db
+                    db: astitva_db // Ensure this matches your global database variable name
                 })
             });
 
-            if(!res.ok) throw new Error("API failed");
             const data = await res.json();
+            
+            if(!res.ok) throw new Error(data.error || "API failed");
             
             if(status) status.innerText = "Tap to speak your needs";
             
-            // Pass the returned RAG data to rendering pipeline
+            // Fixed field names to match Netlify function output
             renderRecommendedSchemes(data.scheme_ids || [], data.speech, data.speech_phonetic);
             
         } catch(e) {
-            console.warn("Netlify failed, retrying direct Gemini...", e);
-            // DIRECT FALLBACK: call Gemini API from the browser when on localhost
-            try {
-                const data = await callGeminiDirect({
-                    query: transcript,
-                    lang: currentLang,
-                    profile: { name: appState.userName, age: appState.userAge, occ: appState.userOcc },
-                    db: astitva_db,
-                    mode: 'rag'
-                });
-                if(status) status.innerText = "Tap to speak your needs";
-                renderRecommendedSchemes(data.scheme_ids || [], data.speech, data.speech_phonetic);
-            } catch(e2) {
-                console.error("Direct API Fallback Failed - RAG:", e2);
-                if(status) status.innerText = "Tap to speak your needs";
-                const errSpeech = currentLang === 'te' ? 'ఇంటర్నెట్ లోపం ఉంది, దయచేసి మళ్లీ ప్రయత్నించండి.' : 'नेटवर्क त्रुटि।';
-                speak(errSpeech, null, null, currentLang === 'te' ? 'Internet lopam undi.' : 'Network truti.');
-            }
+            console.error("Netlify Gemini failed - RAG:", e);
+            if(status) status.innerText = "Tap to speak your needs";
+            
+            const errSpeech = currentLang === 'te' 
+                ? 'క్షమించండి. ఇప్పుడు సేవ అందుబాటులో లేదు.' 
+                : (currentLang === 'hi' ? 'क्षमा कीजिए। अभी सेवा उपलब्ध नहीं है।' : 'Sorry, the service is not available right now.');
+            
+            const errPhonetic = currentLang === 'te' 
+                ? 'Kshaminchandi. Ippudu seva andubatulo ledu.' 
+                : (currentLang === 'hi' ? 'Kshama kijiye. Abhi seva uplabdh nahin hai.' : '');
+
+            speak(errSpeech, null, null, errPhonetic);
         }
     });
 }
@@ -750,7 +726,7 @@ async function handleExpertChat(query) {
     const chatContainer = document.querySelector('#view-6 .overflow-y-auto');
     if(!chatContainer) return;
 
-    // Add user message
+    // Add user message to UI
     const div = document.createElement('div');
     div.className = "flex gap-2 max-w-[85%] self-end flex-row-reverse animate-fadeIn";
     div.innerHTML = `
@@ -761,111 +737,39 @@ async function handleExpertChat(query) {
     chatContainer.appendChild(div);
     chatContainer.scrollTop = chatContainer.scrollHeight;
 
-    // Show loading indicator
     const reqCtx = appState.matchedScheme ? `User is asking about ${appState.matchedScheme.name}. User query: ${query}` : query;
     
     try {
-        // FAST PATH: If local API key exists, bypass dead Netlify backend
-        const keyMeta = document.querySelector('meta[name="gemini-key"]');
-        if (keyMeta && keyMeta.getAttribute('content')) {
-            const data = await callGeminiDirect({
-                messages: reqCtx,
-                lang: currentLang,
-                mode: 'chat'
-            });
-            appendBotReply(chatContainer, data.reply, data.reply_phonetic || "");
-            return;
-        }
-
-        // Send to Netlify Function
         const res = await fetch('/.netlify/functions/gemini', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ messages: reqCtx, lang: currentLang })
         });
         
-        if (!res.ok) throw new Error("Offline or Local");
-        
         const data = await res.json();
-        const phonetic = data.reply_phonetic || "";
-        appendBotReply(chatContainer, data.reply, phonetic);
+
+        if (!res.ok) throw new Error(data.error || "Offline or server error");
+        
+        // Fixed field names to match Netlify function output
+        appendBotReply(chatContainer, data.reply, data.reply_phonetic || "");
         
     } catch(err) {
-        console.warn("Netlify failed, retrying direct Gemini...", err);
-        try {
-            const data = await callGeminiDirect({
-                messages: reqCtx,
-                lang: currentLang,
-                mode: 'chat'
-            });
-            appendBotReply(chatContainer, data.reply, data.reply_phonetic || "");
-        } catch(e2) {
-            console.error("Direct API Fallback Failed - Chat:", e2);
-            const fallback = currentLang === 'te' ? "నేను మీకు సహాయం చేస్తాను." : "मैं निश्चित रूप से आपकी मदद करूंगी।";
-            appendBotReply(chatContainer, fallback + " (Offline Mode)", currentLang === 'te' ? "Nenu meku sahayam chestanu." : "");
-        }
+        console.error("Netlify Gemini failed - Chat:", err);
+        
+        const fallback = currentLang === 'te' 
+            ? "క్షమించండి. ఇప్పుడు సమాధానం ఇవ్వలేకపోతున్నాను." 
+            : (currentLang === 'hi' ? "क्षमा कीजिए। मैं अभी उत्तर नहीं दे पा रहा हूँ।" : "Sorry, I cannot answer right now.");
+            
+        const fallbackPhonetic = currentLang === 'te' 
+            ? "Kshaminchandi. Ippudu samadhanam ivvalekapotunnanu." 
+            : (currentLang === 'hi' ? "Kshama kijiye. Main abhi uttar nahin de pa raha hoon." : "");
+
+        appendBotReply(chatContainer, fallback + " (Offline Mode)", fallbackPhonetic);
     }
 }
-
 // Direct browser-side Gemini API call (fallback when Netlify is not available)
 // NOTE: Only works locally if you add <meta name="gemini-key" content="YOUR_KEY"> to index.html
 // On Netlify this function is never reached because the serverless function handles it.
-async function callGeminiDirect({ query, messages, lang, profile, db, mode }) {
-    // Safely read key from a meta tag — never hardcode it here
-    const keyMeta = document.querySelector('meta[name="gemini-key"]');
-    const API_KEY = keyMeta ? keyMeta.getAttribute('content') : null;
-
-    if (!API_KEY) {
-        throw new Error("No local API key. Deploy to Netlify for full AI features.");
-    }
-
-    const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`;
-    const uLang = lang === 'te' ? 'Telugu' : (lang === 'hi' ? 'Hindi' : 'English');
-    const pName = profile?.name || appState.userName || "User";
-    const pAge  = profile?.age  || appState.userAge  || "Unknown";
-    const pOcc  = profile?.occ  || appState.userOcc  || "Unknown";
-
-    let sysInstruction, contentText;
-
-    if (mode === 'rag') {
-        sysInstruction = `You are Disha, an expert Indian Government welfare scheme recommender for rural, non-literate users.
-The user's spoken language is: ${uLang}.
-User Profile: Name: ${pName}, Age: ${pAge}, Occupation: ${pOcc}.
-Database of schemes: ${JSON.stringify((db || []).slice(0, 20))}.
-
-TASK: Match problem against EXACT schemes from DB. Do not invent. Speak strictly in ${uLang}. Order by highest priority.
-Structure speech: 1) Explain top scheme and its exact benefit. 2) Explain other schemes. 3) Ask which one they want to proceed with.
-Return ONLY valid JSON:
-{ "speech": "Empathetic conversational answer in ${uLang} script correctly structured.", "speech_phonetic": "Same structured answer in Latin script", "scheme_ids": ["ID1"] }`;
-        contentText = "Query: " + (query || "");
-    } else {
-        sysInstruction = `You are Disha, a helpful local rural scheme expert. Be extremely empathetic and concise. No markdown.
-The user's spoken language is: ${uLang}.
-TASK: Answer the question. Return ONLY valid JSON:
-{ "reply": "Concise empathetic answer in ${uLang} script", "reply_phonetic": "Same in Latin script" }`;
-        contentText = "Message: " + (messages || "");
-    }
-
-    const res = await fetch(GEMINI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            system_instruction: { parts: [{ text: sysInstruction }] },
-            contents: [{ parts: [{ text: contentText }] }],
-            generationConfig: { temperature: 0.1, responseMimeType: "application/json" }
-        })
-    });
-
-    const raw = await res.json();
-    if (raw.error) throw new Error(raw.error.message);
-    let text = raw.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Empty Gemini response");
-    
-    // Clean markdown blocks (```json ... ```)
-    text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
-    
-    return JSON.parse(text);
-}
 
 function appendBotReply(container, replyText, replyPhonetic) {
     const botDiv = document.createElement('div');
